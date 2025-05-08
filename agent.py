@@ -1,37 +1,45 @@
-from agents import (
-    Agent,
-)
-from agents.mcp import MCPServer
-from agents.extensions.handoff_prompt import RECOMMENDED_PROMPT_PREFIX
+from google.adk.agents import LlmAgent
+from google.adk.tools.mcp_tool.mcp_tool import MCPTool
 
-from enum import Enum
-from pydantic import BaseModel
 
-class AgentContext(BaseModel):
-    message_user_name: str | None = None
-    message_user_id: int | None = None
+# Taken from agents.extensions.handoff_prompt (openai-agents)
+RECOMMENDED_PROMPT_PREFIX = """
+# System context
+You are part of a multi-agent system called the Agents SDK, designed to make agent coordination and execution easy.
+Agents uses two primary abstraction: **Agents** and **Handoffs**.
+An agent encompasses instructions and tools and can hand off a conversation to another agent when appropriate.
+Handoffs are achieved by calling a handoff function, generally named `transfer_to_<agent_name>`.
+Transfers between agents are handled seamlessly in the background; do not mention or draw attention to these transfers in your conversation with the user.
+"""
 
-class TriageKindEnum(str, Enum):
-    question = 'question'
-    bug_report = 'bug_report'
 
-class TriageOutput(BaseModel):
-    summary: str
-    kind: TriageKindEnum
+# class AgentContext(BaseModel):
+#     message_user_name: str | None = None
+#     message_user_id: int | None = None
 
-async def run_triage_agent(mcp_server: MCPServer):
-    github_agent = Agent[AgentContext](
-        name="GitHub Agent",
-        instructions=(
+# class TriageKindEnum(str, Enum):
+#     question = 'question'
+#     bug_report = 'bug_report'
+
+# class TriageOutput(BaseModel):
+#     summary: str
+#     kind: TriageKindEnum
+
+async def create_triage_agent(github_mcp_tool: MCPTool) -> LlmAgent:
+    github_agent = LlmAgent(
+        name="github_agent",
+        description="Agent responsible to interact with GitHub (can manipulate repos, PRs, issues, commits, etc)",
+        instruction=(
             f"{RECOMMENDED_PROMPT_PREFIX} "
             "You are a helpful, generic, GitHub agent. Use your tools to interact with GitHub. You may browse pull requests, commits, etc."
         ),
-        mcp_servers=[mcp_server],
+        tools=github_mcp_tool,
     )
 
-    issue_agent = Agent[AgentContext](
-        name="Issue Agent",
-        instructions=(
+    issue_agent = LlmAgent(
+        name="issue_agent",
+        description="Agent responsible for filing issues and bug reports",
+        instruction=(
             f"{RECOMMENDED_PROMPT_PREFIX} "
             """
             You are a helpful agent responsible for creating and updating GitHub issues. Use your tools to interact with GitHub.
@@ -56,13 +64,13 @@ async def run_triage_agent(mcp_server: MCPServer):
             If you end up creating or updating an issue, always reference the issue URL in your response.
             """
         ),
-        mcp_servers=[mcp_server],
+        tools=github_mcp_tool,
     )
 
-    return Agent[AgentContext](
-        name="Triage Agent",
-        handoff_description="A triage agent that can delegate a user's request to the appropriate agent.",
-        instructions=(
+    return LlmAgent(
+        name="triage_agent",
+        description="Triage agent that can delegate a user's request to the appropriate agent",
+        instruction=(
             f"{RECOMMENDED_PROMPT_PREFIX} "
             """
             You are a helpful Discord bot. You can use your tools to help answer questions and perform tasks.
@@ -70,19 +78,8 @@ async def run_triage_agent(mcp_server: MCPServer):
             Your response will be sent verbatim back to the user, so speak in the appropriate tone.
             """
         ),
-        # output_type=TriageOutput,
-        tools = [
-            issue_agent.as_tool(
-                tool_name="issue_agent",
-                tool_description="agent responsible for filing issues and bug reports",
-            ),
-            github_agent.as_tool(
-                tool_name="github_agent",
-                tool_description="generic agent to interact with GitHub (can manipulate repos, PRs, issues, commits, etc)",
-            )
-        ]
-        # handoffs=[
-        #     # issue_agent,
-        #     # github_agent,
-        # ],
+        sub_agents=[
+            issue_agent,
+            github_agent,
+        ],
     )
