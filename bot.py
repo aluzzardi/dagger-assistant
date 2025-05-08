@@ -1,8 +1,10 @@
 import discord
+from google.adk.tools.mcp_tool.mcp_toolset import MCPToolset, StdioServerParameters
+from google.adk.agents import LlmAgent, RunConfig
+from google.adk.runners import Runner
+
 from config import CONFIG
-from agent import AgentContext, run_triage_agent
-from agents import Agent, Runner, trace
-from agents.mcp import MCPServerStdio
+from agent import create_triage_agent
 
 
 def format_message(message: discord.Message) -> str:
@@ -16,26 +18,26 @@ def message_to_input(message: discord.Message, bot_user: discord.User):
 class Bot(discord.Client):
     @classmethod
     async def create(self, *args, **kwargs):
-        github_mcp_server = MCPServerStdio(
-            params={
-                "command": "docker",
-                "args": [
-                "run",
-                "-i",
-                "--rm",
-                "-e",
-                "GITHUB_PERSONAL_ACCESS_TOKEN=" + CONFIG.GITHUB_TOKEN,
-                "ghcr.io/github/github-mcp-server"
+        # FIXME: exit_stack?
+        tools, exit_stack = await MCPToolset.from_server(
+            connection_params=StdioServerParameters(
+                command="docker",
+                args=[
+                    "run",
+                    "-i",
+                    "--rm",
+                    "-e",
+                    "GITHUB_PERSONAL_ACCESS_TOKEN=" + CONFIG.GITHUB_TOKEN,
+                    "ghcr.io/github/github-mcp-server"
                 ],
-            }
+            ),
         )
-        await github_mcp_server.connect()
 
-        triage_agent = await run_triage_agent(github_mcp_server)
+        triage_agent = await create_triage_agent(tools)
 
         return Bot(triage_agent, *args, **kwargs)
 
-    def __init__(self, triage_agent: Agent, *args, **kwargs):
+    def __init__(self, triage_agent: LlmAgent, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
         self._triage_agent = triage_agent
@@ -53,11 +55,6 @@ class Bot(discord.Client):
             return
 
 
-        context = AgentContext(
-            message_user_name=message.author.name,
-            message_user_id=message.author.id,
-        )
-
         inputs: list[TResponseInputItem] = []
         inputs.append({"content": format_message(message), "role": "user"})
         # If the message is a reply, add the referenced message to the input
@@ -73,30 +70,28 @@ class Bot(discord.Client):
             print(f"History: {history}")
             inputs = history + inputs
 
-        with trace("Processing message"):
-            async with message.channel.typing():
-                try:
-                    triage_result = await Runner.run(
-                        self._triage_agent,
-                        inputs,
-                        context=context,
-                    )
+        # with trace("Processing message"):
+        async with message.channel.typing():
+            try:
+                config = RunConfig()
+                runner = Runner(agent=self._triage_agent)
+                triage_result = await runner.run_async(user_id=self.user.id, new_message=inputs, run_config=config)
 
-                    # FIXME: not using typed outputs right now
-                    # assert isinstance(triage_result.final_output, TriageOutput)
+                # FIXME: not using typed outputs right now
+                # assert isinstance(triage_result.final_output, TriageOutput)
 
-                    print(f"> {triage_result.final_output}")
-                    await message.channel.send(
-                        content=triage_result.final_output,
-                        reference=message,
-                        suppress_embeds=True,
-                    )
-                except Exception as e:
-                    await message.channel.send(
-                        content=f"Error triaging message: {e}",
-                        reference=message,
-                        suppress_embeds=True,
-                    )
+                print(f"> {triage_result.final_output}")
+                await message.channel.send(
+                    content=triage_result.final_output,
+                    reference=message,
+                    suppress_embeds=True,
+                )
+            except Exception as e:
+                await message.channel.send(
+                    content=f"Error triaging message: {e}",
+                    reference=message,
+                    suppress_embeds=True,
+                )
 
 async def run_bot():
     intents = discord.Intents.default()
