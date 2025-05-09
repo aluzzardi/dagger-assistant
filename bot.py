@@ -1,94 +1,163 @@
 import discord
-from config import CONFIG
-from agent import AgentContext, run_triage_agent
-from agents import Agent, Runner, trace
-from agents.mcp import MCPServerStdio
+import json
+from agent import AgentContext, Triager
+from agents import Runner, trace
 
-
-def format_message(message: discord.Message) -> str:
-    return f"<context><user>{message.author.name}</user></context>{message.content}"
+def format_message(message: discord.Message) -> dict:
+    return json.dumps({
+        "user": message.author.name,
+        "created_at": message.created_at.isoformat(),
+        "message": message.clean_content,
+    })
 
 def message_to_input(message: discord.Message, bot_user: discord.User):
     if message.author == bot_user:
-        return {"content": message.content, "role": "assistant"}
+        return {"content": message.clean_content, "role": "assistant"}
     return {"content": format_message(message), "role": "user"}
+
+async def get_thread_starter_message(thread: discord.Thread) -> discord.Message | None:
+    if thread.starter_message is not None:
+        return thread.starter_message
+
+    # If starter_message is not in cache, fetch the oldest message
+    history = [message async for message in thread.history(limit=1, oldest_first=True)]
+    if not history:
+        return None
+    return history[0]
 
 class Bot(discord.Client):
     @classmethod
     async def create(self, *args, **kwargs):
-        github_mcp_server = MCPServerStdio(
-            params={
-                "command": "docker",
-                "args": [
-                "run",
-                "-i",
-                "--rm",
-                "-e",
-                "GITHUB_PERSONAL_ACCESS_TOKEN=" + CONFIG.GITHUB_TOKEN,
-                "ghcr.io/github/github-mcp-server"
-                ],
-            }
-        )
-        await github_mcp_server.connect()
+        triager = Triager()
+        await triager.connect()
 
-        triage_agent = await run_triage_agent(github_mcp_server)
+        return Bot(triager, *args, **kwargs)
 
-        return Bot(triage_agent, *args, **kwargs)
-
-    def __init__(self, triage_agent: Agent, *args, **kwargs):
+    def __init__(self, triager: Triager, *args, **kwargs):
         super().__init__(*args, **kwargs)
-
-        self._triage_agent = triage_agent
+        self._triager = triager
 
     async def on_ready(self):
         print(f'We have logged in as {self.user}')
 
-    async def on_message(self, message):
-        print(f"Processing message: {message}")
+    # Dispatch messages based on the channel type
+    # async def on_message(self, message):
+    #     print(f"Processing message: {message}")
 
+    #     # Ignore our own messages
+    #     if message.author == self.user:
+    #         return
+
+    #     if isinstance(message.channel, discord.Thread):
+    #         await self.on_thread_message(message)
+    #     elif isinstance(message.channel, discord.TextChannel):
+    #         await self.on_channel_message(message)
+    #     else:
+    #         await message.reply(
+    #             "I can only process messages in text channels or threads",
+    #         )
+
+    async def on_message(self, message):
+        # Ignore our own messages
         if message.author == self.user:
             return
 
-        if not self.user.mentioned_in(message):
+        # Ignore DMs
+        if isinstance(message.channel, discord.DMChannel):
+            await message.channel.send(
+                "I can't talk to you in DMs, ask me again in a public channel",
+            )
             return
 
+        # Only consider messages where we're being mentioned *directly*
+        if not self.user.mentioned_in(message):
+            return
+        if message.mention_everyone:
+            return
 
-        context = AgentContext(
-            message_user_name=message.author.name,
-            message_user_id=message.author.id,
-        )
+        # Only process messages from the @DaggerTeam
+        if not any(filter(lambda role: role.name == "Dagger Team", message.author.roles)):
+            await message.channel.send(
+                "I can only answer to Dagger Team members for now",
+            )
+            return
 
-        inputs: list[TResponseInputItem] = []
-        inputs.append({"content": format_message(message), "role": "user"})
-        # If the message is a reply, add the referenced message to the input
+        query = {
+            "mention": format_message(message),
+        }
         if message.reference is not None:
             message_reference = await message.channel.fetch_message(message.reference.message_id)
-            inputs.insert(0, {"content": format_message(message_reference), "role": "user"})
+            query["reference"] = format_message(message_reference)
 
-        # Grab the channel history as context
-        history = [message_to_input(message, self.user) async
-            for message in message.channel.history(limit=50)
-        ]
+        history = [message async for message in message.channel.history(limit=100)]
+        history = sorted(history, key=lambda message: message.created_at)
         if history:
-            print(f"History: {history}")
-            inputs = history + inputs
+            query["history"] = [format_message(message) for message in history]
 
-        with trace("Processing message"):
+        print(f"Query: {query}")
+
+        with trace("Processing channel message"):
             async with message.channel.typing():
                 try:
                     triage_result = await Runner.run(
-                        self._triage_agent,
-                        inputs,
-                        context=context,
+                        self._triager.agent,
+                        json.dumps(query),
+                        context=AgentContext(
+                            user=message.author.name,
+                        ),
                     )
 
-                    # FIXME: not using typed outputs right now
-                    # assert isinstance(triage_result.final_output, TriageOutput)
+                    print(f"> {triage_result.final_output}")
+                    await message.reply(
+                        content=triage_result.final_output,
+                        suppress_embeds=True,
+                    )
+
+                    # Create a thread for the response
+                    # assert isinstance(triage_result.final_output, SummaryOutput)
+                    # thread = await message.create_thread(name=triage_result.final_output.title)
+                    # await thread.send(
+                    #     content=triage_result.final_output.summary,
+                    #     # reference=message,
+                    #     suppress_embeds=True,
+                    # )
+                except Exception as e:
+                    await message.reply(
+                        content=f"Error triaging message: {e}",
+                        suppress_embeds=True,
+                    )
+                    raise
+
+    async def on_thread_message(self, message):
+        print(f"Processing thread message: {message}")
+        starter_message = await get_thread_starter_message(message.channel)
+        if starter_message is None:
+            print("No starter message found")
+        if starter_message.author != self.user:
+            print(f"Didn't start the thread: {starter_message.author}")
+            return
+        print("I started this thread")
+
+        history = [message async for message in message.channel.history(limit=100)]
+        history = sorted(history, key=lambda message: message.created_at)
+
+        inputs = [message_to_input(message, self.user) for message in history]
+
+        with trace("Processing thread message"):
+            async with message.channel.typing():
+                try:
+                    triage_result = await Runner.run(
+                        self._triager.agent,
+                        inputs,
+                        context=AgentContext(
+                            user=message.author.name,
+                        ),
+                    )
 
                     print(f"> {triage_result.final_output}")
                     await message.channel.send(
                         content=triage_result.final_output,
-                        reference=message,
+                        # reference=message,
                         suppress_embeds=True,
                     )
                 except Exception as e:
@@ -97,11 +166,3 @@ class Bot(discord.Client):
                         reference=message,
                         suppress_embeds=True,
                     )
-
-async def run_bot():
-    intents = discord.Intents.default()
-    intents.message_content = True
-    discord.utils.setup_logging()
-
-    client = await Bot.create(intents=intents)
-    await client.start(CONFIG.DISCORD_TOKEN, reconnect=True)
