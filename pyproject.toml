@@ -1,7 +1,7 @@
 [project]
-name = "dagger-bot"
+name = "dagger-assistant"
 version = "0.1.0"
-description = "Discord Bot Agent for Dagger"
+description = "Discord Assistant Agent for Dagger"
 requires-python = ">=3.9"
 dependencies = ["openai-agents==0.0.14", "discord.py==2.5.2"]
 
