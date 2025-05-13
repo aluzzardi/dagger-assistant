@@ -27,15 +27,16 @@ async def get_thread_starter_message(thread: discord.Thread) -> discord.Message 
 
 class Bot(discord.Client):
     @classmethod
-    async def create(self, *args, **kwargs):
+    async def create(self, *args, allow_dms: bool = False, **kwargs):
         triager = Triager()
         await triager.connect()
 
-        return Bot(triager, *args, **kwargs)
+        return Bot(triager=triager, allow_dms=allow_dms, *args, **kwargs)
 
-    def __init__(self, triager: Triager, *args, **kwargs):
+    def __init__(self, triager: Triager, allow_dms: bool = False, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._triager = triager
+        self._allow_dms = allow_dms
 
     async def on_ready(self):
         print(f'We have logged in as {self.user}')
@@ -62,21 +63,24 @@ class Bot(discord.Client):
         if message.author == self.user:
             return
 
+        # Check if it's a DM
+        is_dm = isinstance(message.channel, discord.DMChannel)
+
         # Ignore DMs
-        if isinstance(message.channel, discord.DMChannel):
+        if not self._allow_dms and is_dm:
             await message.channel.send(
                 "I can't talk to you in DMs, ask me again in a public channel",
             )
             return
 
-        # Only consider messages where we're being mentioned *directly*
-        if not self.user.mentioned_in(message):
+        # Only consider messages where we're being mentioned *directly* (or DMs)
+        if not is_dm and not self.user.mentioned_in(message):
             return
         if message.mention_everyone:
             return
 
-        # Only process messages from the @DaggerTeam
-        if not any(filter(lambda role: role.name == "Dagger Team", message.author.roles)):
+        # Only process messages from the @DaggerTeam (or DMs)
+        if not is_dm and not any(filter(lambda role: role.name == "Dagger Team", message.author.roles)):
             await message.channel.send(
                 "I can only answer to Dagger Team members for now",
             )
