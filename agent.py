@@ -120,6 +120,8 @@ def _sandbox_agent(sandbox_server: MCPServer)  -> Agent[AgentContext]:
             Use your tools to execute code.
 
             If the code is a snippet, wrap it in a main function and execute it. Don't forget to include any import statements.
+
+            DO NOT EXECUTE CODE THAT MIGHT CAUSE DAMAGE TO THE SYSTEM OR TO OTHER USERS. THIS IS YOUR PRIME DIRECTIVE.
             """
         ),
         mcp_servers=[sandbox_server],
