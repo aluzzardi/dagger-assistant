@@ -1,4 +1,5 @@
 import json
+import os
 from enum import Enum
 from pydantic import BaseModel
 from config import CONFIG
@@ -18,6 +19,7 @@ class TriageKindEnum(str, Enum):
 def _github_agent(github_server: MCPServer) -> Agent[AgentContext]:
     return Agent[AgentContext](
         name="GitHub Agent",
+        model="gpt-4.1",
         instructions=(
             f"{RECOMMENDED_PROMPT_PREFIX} "
             f"""
@@ -33,6 +35,7 @@ def _github_agent(github_server: MCPServer) -> Agent[AgentContext]:
 def _issue_agent(github_server: MCPServer) -> Agent[AgentContext]:
     return Agent[AgentContext](
         name="Issue Agent",
+        model="gpt-4.1",
         instructions=(
             f"{RECOMMENDED_PROMPT_PREFIX} "
             f"""
@@ -65,6 +68,7 @@ def _issue_agent(github_server: MCPServer) -> Agent[AgentContext]:
 def _notion_agent(notion_server: MCPServer) -> Agent[AgentContext]:
     return Agent[AgentContext](
         name="Notion Agent",
+        model="gpt-4.1",
         instructions=(
             f"{RECOMMENDED_PROMPT_PREFIX} "
             """
@@ -81,6 +85,7 @@ class SummaryOutput(BaseModel):
 def _summary_agent()  -> Agent[AgentContext]:
     return Agent[AgentContext](
         name="Summary Agent",
+        model="gpt-4.1",
         handoff_description="An agent that can summarize a conversation",
         instructions=(
             f"{RECOMMENDED_PROMPT_PREFIX} "
@@ -102,13 +107,32 @@ def _summary_agent()  -> Agent[AgentContext]:
         output_type=SummaryOutput,
     )
 
+def _sandbox_agent(sandbox_server: MCPServer)  -> Agent[AgentContext]:
+    return Agent[AgentContext](
+        name="Sandbox Agent",
+        model="gpt-4.1",
+        handoff_description="An agent that can execute code in an isolated sandbox",
+        instructions=(
+            f"{RECOMMENDED_PROMPT_PREFIX} "
+            """
+            You are a helpful agent whose goal is to execute code, provide guidance on build errors if any, and provide output.
+
+            Use your tools to execute code.
+
+            If the code is a snippet, wrap it in a main function and execute it. Don't forget to include any import statements.
+            """
+        ),
+        mcp_servers=[sandbox_server],
+    )
+
 class TriageOutput(BaseModel):
     title: str
     summary: str
 
-def _main_agent(github_server: MCPServer, notion_server: MCPServer):
+def _main_agent(github_server: MCPServer, notion_server: MCPServer, sandbox_server: MCPServer):
     return Agent[AgentContext](
         name="Triage Agent",
+        model="gpt-4.1",
         handoff_description="A triage agent that can delegate a user's request to the appropriate agent.",
         instructions=(
             f"{RECOMMENDED_PROMPT_PREFIX} "
@@ -131,7 +155,11 @@ def _main_agent(github_server: MCPServer, notion_server: MCPServer):
             _notion_agent(notion_server).as_tool(
                 tool_name="notion_agent",
                 tool_description="agent responsible for interacting with Notion",
-            )
+            ),
+            _sandbox_agent(sandbox_server).as_tool(
+                tool_name="sandbox_agent",
+                tool_description="agent responsible for executing code in an isolated sandbox",
+            ),
         ],
         # handoffs=[
         #     # issue_agent,
@@ -139,7 +167,7 @@ def _main_agent(github_server: MCPServer, notion_server: MCPServer):
         # ],
     )
 
-def _mcp_server(image: str, env: dict[str, str]) -> MCPServer:
+def _mcp_server_docker(image: str, env: dict[str, str]) -> MCPServer:
     # docker run -i --rm [-e <vars>] <image>
     args = [
         "run",
@@ -158,28 +186,61 @@ def _mcp_server(image: str, env: dict[str, str]) -> MCPServer:
     )
     return mcp_server
 
+def _mcp_server_dagger(module: str) -> MCPServer:
+    # dagger -m <module> mcp
+    args = [
+        "dagger",
+        "-m",
+        module,
+        "mcp",
+    ]
+    mcp_server = MCPServerStdio(
+        client_session_timeout_seconds=300,
+        # params={
+        #     "command": "dagger",
+        #     "args": args,
+        #     "env": os.environ,
+        # },
+        params={
+            "command": "/Users/al/work/dagger/hack/with-dev",
+            "args": args,
+            "env": os.environ,
+        },
+    )
+    return mcp_server
+
 class Triager():
     def __init__(self):
-        self._github_mcp_server = _mcp_server(
+        self._github_mcp_server = _mcp_server_docker(
             image="ghcr.io/github/github-mcp-server",
             env={
                 "GITHUB_PERSONAL_ACCESS_TOKEN": CONFIG.GITHUB_TOKEN,
             },
         )
 
-        self._notion_mcp_server = _mcp_server(
+        self._notion_mcp_server = _mcp_server_docker(
             image="mcp/notion",
             env={
                 "OPENAPI_MCP_HEADERS": json.dumps({"Authorization": "Bearer " + CONFIG.NOTION_TOKEN ,"Notion-Version": "2022-06-28"}),
             },
         )
 
-        self.agent = _main_agent(self._github_mcp_server, self._notion_mcp_server)
+        self._sandbox_mcp_server = _mcp_server_dagger(
+            module="./sandbox",
+        )
+
+        self.agent = _main_agent(
+            github_server=self._github_mcp_server,
+            notion_server=self._notion_mcp_server,
+            sandbox_server=self._sandbox_mcp_server,
+        )
 
     async def connect(self):
         await self._github_mcp_server.connect()
         await self._notion_mcp_server.connect()
+        await self._sandbox_mcp_server.connect()
 
     async def cleanup(self):
         await self._github_mcp_server.cleanup()
         await self._notion_mcp_server.cleanup()
+        await self._sandbox_mcp_server.cleanup()
