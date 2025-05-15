@@ -1,0 +1,49 @@
+import json
+
+from agent import AgentContext, Triager
+from agents import Runner, trace
+
+
+class MockUser:
+    def __init__(self):
+        self.name = "test"
+
+
+class MockBot:
+    @classmethod
+    async def create(self, *args, **kwargs):
+        triager = Triager()
+        await triager.connect()
+        return MockBot(triager=triager, *args, **kwargs)
+
+    def __init__(self, triager: Triager, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._triager = triager
+        self.user = MockUser()
+
+    async def on_ready(self):
+        print(f'We have logged in as {self.user}')
+
+    async def on_message(self, message: str):
+        print(f"Processing message: {message}")
+        triage_result = await Runner.run(
+            self._triager.agent,
+            json.dumps({
+                # FIXME: format_message?
+                "mention": message,
+            }),
+            context=AgentContext(
+                user=self.user.name,
+            ),
+        )
+
+        print(f"> {triage_result.final_output}")
+
+    async def start(self):        
+        await self.on_ready()
+        while True:
+            message = input("> ")
+            message = message.strip()
+            if not message:
+                continue
+            await self.on_message(message)

@@ -184,30 +184,31 @@ def _mcp_server_docker(image: str, env: dict[str, str]) -> MCPServer:
         params={
             "command": "docker",
             "args": args,
-        }
+        },
+        # increased timeout to account for image pull when needed
+        client_session_timeout_seconds=20,
     )
     return mcp_server
 
 def _mcp_server_dagger(module: str) -> MCPServer:
     # dagger -m <module> mcp
     args = [
-        "dagger",
         "-m",
         module,
         "mcp",
     ]
     mcp_server = MCPServerStdio(
-        client_session_timeout_seconds=300,
-        # params={
-        #     "command": "dagger",
-        #     "args": args,
-        #     "env": os.environ,
-        # },
+        client_session_timeout_seconds=30,
         params={
-            "command": "/Users/al/work/dagger/hack/with-dev",
+            "command": "dagger",
             "args": args,
             "env": os.environ,
         },
+        # params={
+        #     "command": "/Users/al/work/dagger/hack/with-dev",
+        #     "args": args,
+        #     "env": os.environ,
+        # },
     )
     return mcp_server
 
