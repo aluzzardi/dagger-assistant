@@ -58,7 +58,7 @@ class Bot(discord.Client):
     #             "I can only process messages in text channels or threads",
     #         )
 
-    async def on_message(self, message):
+    async def on_message(self, message: discord.Message):
         # Ignore our own messages
         if message.author == self.user:
             return
@@ -132,7 +132,7 @@ class Bot(discord.Client):
                     )
                     raise
 
-    async def on_thread_message(self, message):
+    async def on_thread_message(self, message: discord.Message):
         print(f"Processing thread message: {message}")
         starter_message = await get_thread_starter_message(message.channel)
         if starter_message is None:
