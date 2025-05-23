@@ -8,6 +8,7 @@ class AgentConfig:
     GITHUB_TOKEN: str
     NOTION_TOKEN: str
     GITHUB_REPO: str
+    DAGGER_CLOUD_TOKEN: str
 
 # Load from environment variables
 import os
@@ -21,4 +22,5 @@ CONFIG = AgentConfig(
     GITHUB_TOKEN=os.getenv("GITHUB_TOKEN"),
     NOTION_TOKEN=os.getenv("NOTION_TOKEN"),
     GITHUB_REPO=os.getenv("GITHUB_REPO", "dagger/dagger"),
+    DAGGER_CLOUD_TOKEN=os.getenv("DAGGER_CLOUD_TOKEN"),
 )

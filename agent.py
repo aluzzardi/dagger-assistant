@@ -1,12 +1,13 @@
 import json
 import os
 from enum import Enum
+import base64
 from pydantic import BaseModel
 from config import CONFIG
 from agents import (
     Agent,
 )
-from agents.mcp import MCPServer, MCPServerStdio
+from agents.mcp import MCPServer, MCPServerStdio, MCPServerSse
 from agents.extensions.handoff_prompt import RECOMMENDED_PROMPT_PREFIX
 
 class AgentContext(BaseModel):
@@ -127,11 +128,29 @@ def _sandbox_agent(sandbox_server: MCPServer)  -> Agent[AgentContext]:
         mcp_servers=[sandbox_server],
     )
 
+def _cloud_agent(cloud_server: MCPServer)  -> Agent[AgentContext]:
+    return Agent[AgentContext](
+        name="Dagger Cloud Agent",
+        model="gpt-4.1",
+        handoff_description="An agent that can analyze Dagger Cloud traces",
+        instructions=(
+            f"{RECOMMENDED_PROMPT_PREFIX} "
+            """
+            You are a helpful agent whose goal is to analyze dagger cloud traces and answer user questions.
+
+            Use your tools to interact with Dagger Cloud.
+
+            Traces are in the form of https://v3.dagger.cloud/<Org>/<TraecID>
+            """
+        ),
+        mcp_servers=[cloud_server],
+    )
+
 class TriageOutput(BaseModel):
     title: str
     summary: str
 
-def _main_agent(github_server: MCPServer, notion_server: MCPServer, sandbox_server: MCPServer):
+def _main_agent(github_server: MCPServer, notion_server: MCPServer, sandbox_server: MCPServer, cloud_server: MCPServer):
     return Agent[AgentContext](
         name="Triage Agent",
         model="gpt-4.1",
@@ -161,6 +180,10 @@ def _main_agent(github_server: MCPServer, notion_server: MCPServer, sandbox_serv
             _sandbox_agent(sandbox_server).as_tool(
                 tool_name="sandbox_agent",
                 tool_description="agent responsible for executing code in an isolated sandbox",
+            ),
+            _cloud_agent(cloud_server).as_tool(
+                tool_name="cloud_agent",
+                tool_description="agent responsible for analyzing Dagger Cloud traces",
             ),
         ],
         # handoffs=[
@@ -232,18 +255,35 @@ class Triager():
             module="./sandbox",
         )
 
+        self._cloud_mcp_server = MCPServerSse(
+            params={
+                # "url": "http://localhost:8020/mcp",
+                "url": "https://mcp-api.preview.dagger.cloud/mcp",
+                "headers": {
+                    "Authorization": f"Basic {base64.b64encode((CONFIG.DAGGER_CLOUD_TOKEN + ":").encode()).decode("ascii")}",
+                },
+                # headers={
+                #     # "Authorization": f"Bearer {CONFIG.DAGGER_TOKEN}",
+                # },
+            },
+        )
+
+
         self.agent = _main_agent(
             github_server=self._github_mcp_server,
             notion_server=self._notion_mcp_server,
             sandbox_server=self._sandbox_mcp_server,
+            cloud_server=self._cloud_mcp_server,
         )
 
     async def connect(self):
         await self._github_mcp_server.connect()
         await self._notion_mcp_server.connect()
-        await self._sandbox_mcp_server.connect()
+        # await self._sandbox_mcp_server.connect()
+        await self._cloud_mcp_server.connect()
 
     async def cleanup(self):
         await self._github_mcp_server.cleanup()
         await self._notion_mcp_server.cleanup()
-        await self._sandbox_mcp_server.cleanup()
+        # await self._sandbox_mcp_server.cleanup()
+        await self._cloud_mcp_server.cleanup()
