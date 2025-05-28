@@ -6,6 +6,7 @@ import asyncio
 import discord
 from config import CONFIG
 import argparse
+import logging
 
 async def main():
     parser = argparse.ArgumentParser(description='Discord help agent')
@@ -18,6 +19,11 @@ async def main():
     discord.utils.setup_logging()
 
     if args.dev:
+        # In dev mode, remove some noise so we can see the actual output
+        logging.basicConfig(level=logging.INFO)
+        logging.getLogger('openai').setLevel(logging.WARNING)
+        logging.getLogger('httpx').setLevel(logging.WARNING)
+        logging.getLogger('httpcore').setLevel(logging.WARNING)
         client = await MockBot.create()
         await client.start()
         return

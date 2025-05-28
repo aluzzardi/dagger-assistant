@@ -1,4 +1,5 @@
 import json
+from datetime import datetime
 
 from agent import AgentContext, Triager
 from agents import Runner, trace
@@ -8,6 +9,12 @@ class MockUser:
     def __init__(self):
         self.name = "test"
 
+def format_message(message: str) -> dict:
+    return json.dumps({
+        "user": "test",
+        "created_at": datetime.now().isoformat(),
+        "message": message,
+    })
 
 class MockBot:
     @classmethod
@@ -26,12 +33,16 @@ class MockBot:
 
     async def on_message(self, message: str):
         print(f"Processing message: {message}")
+
+        query = {
+            "mention": format_message(message),
+        }
+        # TODO: add "reference" and "history" keys
+        # potentially load discord history from a file
+
         triage_result = await Runner.run(
             self._triager.agent,
-            json.dumps({
-                # FIXME: format_message?
-                "mention": message,
-            }),
+            json.dumps(query),
             context=AgentContext(
                 user=self.user.name,
             ),
